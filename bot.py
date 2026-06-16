@@ -1,131 +1,137 @@
 """
 SmokeHouse – Bot Telegram vendeur
-Compatible python-telegram-bot 21.x / Python 3.13
+Utilise httpx directement, sans python-telegram-bot
 """
 
+import asyncio
+import httpx
+import json
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
-)
 
 BOT_TOKEN = "8829252461:AAHuG4QJ17LmLqjaFaJoEvy0mL0FeHfjB_Y"
 WEBAPP_URL = "https://accessoires-five.vercel.app"
+API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s | %(message)s", level=logging.INFO)
+log = logging.getLogger(__name__)
 
 seller_chat_id = None
 
 
-async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+async def call(client, method, **params):
+    r = await client.post(f"{API}/{method}", json=params)
+    return r.json()
+
+
+async def send(client, chat_id, text, reply_markup=None):
+    params = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    if reply_markup:
+        params["reply_markup"] = reply_markup
+    return await call(client, "sendMessage", **params)
+
+
+async def handle_update(client, update):
     global seller_chat_id
-    seller_chat_id = update.effective_chat.id
 
-    kb = [[InlineKeyboardButton(
-        "🛒  Ouvrir la boutique",
-        web_app=WebAppInfo(url=WEBAPP_URL)
-    )]]
-    await update.message.reply_text(
-        "👋 *Bienvenue sur SmokeHouse !*\n\n"
-        "Appuie sur le bouton ci-dessous pour ouvrir la boutique "
-        "et passer ta commande directement dans Telegram.\n\n"
-        "_Plateaux · Bols · Grinders — livraison rapide_ 🌿",
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(kb)
-    )
+    # /start
+    msg = update.get("message") or update.get("edited_message")
+    if msg:
+        chat_id = msg["chat"]["id"]
+        text = msg.get("text", "")
+        user = msg.get("from", {})
 
+        # Commande reçue depuis la Mini App
+        web_data = msg.get("web_app_data")
+        if web_data:
+            order_text = web_data["data"]
+            buyer_name = user.get("first_name", "") + " " + user.get("last_name", "")
+            buyer_user = f"@{user['username']}" if user.get("username") else "(pas de @)"
+            buyer_id = user["id"]
 
-async def receive_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    order_text = update.effective_message.web_app_data.data
-    buyer = update.effective_user
+            # Confirmation à l'acheteur
+            await send(client, chat_id,
+                "✅ *Commande reçue !*\n\n"
+                "Le vendeur va confirmer très vite.\n"
+                "Tu seras contacté ici sur Telegram.")
 
-    buyer_name = buyer.full_name or "Inconnu"
-    buyer_username = f"@{buyer.username}" if buyer.username else "(pas de @)"
-    buyer_id = buyer.id
+            # Notification au vendeur
+            if seller_chat_id:
+                notif = (
+                    f"🔔 *Nouvelle commande SmokeHouse*\n"
+                    f"──────────────────\n"
+                    f"{order_text}\n"
+                    f"──────────────────\n"
+                    f"👤 *Acheteur :* {buyer_name.strip()} ({buyer_user})\n"
+                    f"🆔 `{buyer_id}`"
+                )
+                kb = {"inline_keyboard": [[
+                    {"text": "✅ Confirmer", "callback_data": f"confirm:{buyer_id}"},
+                    {"text": "❌ Annuler",   "callback_data": f"cancel:{buyer_id}"}
+                ]]}
+                await send(client, seller_chat_id, notif, reply_markup=kb)
+            return
 
-    await update.effective_message.reply_text(
-        "✅ *Commande reçue !*\n\n"
-        "Le vendeur va confirmer ta commande très vite.\n"
-        "Tu seras contacté directement ici sur Telegram.",
-        parse_mode="Markdown"
-    )
+        if text == "/start":
+            seller_chat_id = chat_id
+            kb = {"inline_keyboard": [[
+                {"text": "🛒  Ouvrir la boutique", "web_app": {"url": WEBAPP_URL}}
+            ]]}
+            await send(client, chat_id,
+                "👋 *Bienvenue sur SmokeHouse !*\n\n"
+                "Appuie sur le bouton pour ouvrir la boutique.\n\n"
+                "_Plateaux · Bols · Grinders_ 🌿",
+                reply_markup=kb)
 
-    notif = (
-        f"🔔 *Nouvelle commande SmokeHouse*\n"
-        f"──────────────────\n"
-        f"{order_text}\n"
-        f"──────────────────\n"
-        f"👤 *Acheteur :* {buyer_name} ({buyer_username})\n"
-        f"🆔 `{buyer_id}`"
-    )
+        elif text == "/aide":
+            await send(client, chat_id,
+                "*Commandes :*\n/start — Ouvrir la boutique\n/aide — Cette aide")
 
-    kb = [[
-        InlineKeyboardButton("✅ Confirmer", callback_data=f"confirm:{buyer_id}"),
-        InlineKeyboardButton("❌ Annuler",   callback_data=f"cancel:{buyer_id}"),
-    ]]
+    # Boutons confirmer/annuler
+    cb = update.get("callback_query")
+    if cb:
+        query_id = cb["id"]
+        data = cb.get("data", "")
+        msg_id = cb["message"]["message_id"]
+        chat_id = cb["message"]["chat"]["id"]
 
-    if seller_chat_id:
-        await ctx.bot.send_message(
-            chat_id=seller_chat_id,
-            text=notif,
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-    else:
-        logging.warning("seller_chat_id non défini — envoie /start d'abord.")
+        await call(client, "answerCallbackQuery", callback_query_id=query_id)
 
+        if ":" in data:
+            action, buyer_id = data.split(":")
+            buyer_id = int(buyer_id)
 
-async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    action, buyer_id = query.data.split(":")
-    buyer_id = int(buyer_id)
+            if action == "confirm":
+                await send(client, buyer_id,
+                    "🎉 *Ta commande est confirmée !*\n\n"
+                    "On prépare ton colis, tu recevras les infos de livraison. Merci ! 🙏")
+                await call(client, "editMessageReplyMarkup",
+                    chat_id=chat_id, message_id=msg_id, reply_markup={"inline_keyboard": []})
+                await send(client, chat_id, "✅ Client notifié — commande confirmée.")
 
-    if action == "confirm":
-        await ctx.bot.send_message(
-            chat_id=buyer_id,
-            text="🎉 *Ta commande est confirmée !*\n\n"
-                 "On prépare ton colis. Tu recevras les infos de livraison prochainement. Merci ! 🙏",
-            parse_mode="Markdown"
-        )
-        await query.edit_message_reply_markup(reply_markup=None)
-        await query.message.reply_text("✅ Commande confirmée et client notifié.")
-
-    elif action == "cancel":
-        await ctx.bot.send_message(
-            chat_id=buyer_id,
-            text="😔 *Ta commande a été annulée.*\n\n"
-                 "Un article est peut-être en rupture de stock. "
-                 "Contacte le vendeur pour plus d'infos.",
-            parse_mode="Markdown"
-        )
-        await query.edit_message_reply_markup(reply_markup=None)
-        await query.message.reply_text("❌ Commande annulée et client notifié.")
-
-
-async def aide(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "*Commandes disponibles :*\n\n"
-        "/start — Ouvrir la boutique\n"
-        "/aide — Afficher cette aide\n\n"
-        "Pour toute question : contacte le vendeur directement.",
-        parse_mode="Markdown"
-    )
+            elif action == "cancel":
+                await send(client, buyer_id,
+                    "😔 *Ta commande a été annulée.*\n\n"
+                    "Contacte le vendeur pour plus d'infos.")
+                await call(client, "editMessageReplyMarkup",
+                    chat_id=chat_id, message_id=msg_id, reply_markup={"inline_keyboard": []})
+                await send(client, chat_id, "❌ Client notifié — commande annulée.")
 
 
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("aide",  aide))
-    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, receive_order))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    logging.info("Bot démarré ✅")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+async def main():
+    offset = 0
+    log.info("Bot SmokeHouse démarré ✅")
+    async with httpx.AsyncClient(timeout=60) as client:
+        while True:
+            try:
+                resp = await call(client, "getUpdates",
+                    offset=offset, timeout=30, allowed_updates=["message", "callback_query"])
+                for update in resp.get("result", []):
+                    offset = update["update_id"] + 1
+                    await handle_update(client, update)
+            except Exception as e:
+                log.error(f"Erreur : {e}")
+                await asyncio.sleep(3)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
