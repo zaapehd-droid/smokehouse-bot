@@ -1,43 +1,33 @@
 """
 SmokeHouse – Bot Telegram vendeur
-Reçoit les commandes de la Mini App et les affiche au vendeur.
-
-Installation :
-  pip install python-telegram-bot==20.*
-
-Usage :
-  python bot.py
+Compatible python-telegram-bot 21.x / Python 3.13
 """
 
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
 
-# ─── CONFIG ──────────────────────────────────────────────
 BOT_TOKEN = "8829252461:AAHuG4QJ17LmLqjaFaJoEvy0mL0FeHfjB_Y"
 WEBAPP_URL = "https://accessoires-five.vercel.app"
-SELLER_CHAT_ID = None                      # rempli automatiquement au /start
-# ─────────────────────────────────────────────────────────
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO
 )
 
-seller_chat_id = SELLER_CHAT_ID
+seller_chat_id = None
 
 
-# ── /start ───────────────────────────────────────────────
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     global seller_chat_id
     seller_chat_id = update.effective_chat.id
 
     kb = [[InlineKeyboardButton(
         "🛒  Ouvrir la boutique",
-        web_app={"url": WEBAPP_URL}
+        web_app=WebAppInfo(url=WEBAPP_URL)
     )]]
     await update.message.reply_text(
         "👋 *Bienvenue sur SmokeHouse !*\n\n"
@@ -49,26 +39,23 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ── Réception d'une commande depuis la Mini App ──────────
 async def receive_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    order_text = update.web_app_data.data
+    order_text = update.effective_message.web_app_data.data
     buyer = update.effective_user
 
     buyer_name = buyer.full_name or "Inconnu"
     buyer_username = f"@{buyer.username}" if buyer.username else "(pas de @)"
     buyer_id = buyer.id
 
-    # Confirmation à l'acheteur
-    await update.message.reply_text(
+    await update.effective_message.reply_text(
         "✅ *Commande reçue !*\n\n"
         "Le vendeur va confirmer ta commande très vite.\n"
         "Tu seras contacté directement ici sur Telegram.",
         parse_mode="Markdown"
     )
 
-    # Notification complète au vendeur
     notif = (
-        f"🔔 *Nouvelle commande*\n"
+        f"🔔 *Nouvelle commande SmokeHouse*\n"
         f"──────────────────\n"
         f"{order_text}\n"
         f"──────────────────\n"
@@ -89,10 +76,9 @@ async def receive_order(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kb)
         )
     else:
-        logging.warning("seller_chat_id non défini — fais /start d'abord.")
+        logging.warning("seller_chat_id non défini — envoie /start d'abord.")
 
 
-# ── Boutons Confirmer / Annuler ──────────────────────────
 async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -121,7 +107,6 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("❌ Commande annulée et client notifié.")
 
 
-# ── /aide ────────────────────────────────────────────────
 async def aide(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "*Commandes disponibles :*\n\n"
@@ -132,7 +117,6 @@ async def aide(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ── Main ─────────────────────────────────────────────────
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -140,7 +124,7 @@ def main():
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, receive_order))
     app.add_handler(CallbackQueryHandler(button_handler))
     logging.info("Bot démarré ✅")
-    app.run_polling()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
